@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚡ Дашборд v11.0 (Operational)</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.33.0.min.js"></script>
+    
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f4f7f6; color: #333; margin: 0; padding: 20px; }
+        h1 { color: #1a535c; border-bottom: 2px solid #4ecdc4; padding-bottom: 10px; }
+        h2 { color: #1a535c; margin-top: 0; font-size: 1.2rem; text-align: center; }
+        
+        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }
+        .chart-box { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .full-width-box { grid-column: 1 / -1; }
+        .chart-container { position: relative; height: 350px; width: 100%; }
+        
+        #geo-network-map { height: 600px; border-radius: 8px; }
+        #network-graph { height: 600px; border: 1px solid #ddd; border-radius: 8px; background-color: #fafafa; }
+        #sankey-chart { height: 500px; width: 100%; }
+        #heatmap-chart { height: 350px; width: 100%; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; border: 1px solid #ddd; text-align: left; }
+        th { background-color: #f0f0f0; }
+        td.limit-cell { color: #c0392b; font-weight: bold; }
+        td.maintenance-cell { color: #2980b9; font-weight: bold; }
+        td.alert-cell { color: #d9534f; font-weight: bold; }
+        
+        .resolve-button {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .resolve-button:hover { background-color: #218838; }
+    </style>
+</head>
+<body>
+
+    <h1>⚡ Професійний Дашборд v11.0 (Operational)</h1>
+
+    <div class="dashboard-grid">
+        
+        <div class="chart-box full-width-box"> <h2>Аналіз: Потоки Енергії (Sankey Diagram)</h2> <div id="sankey-chart"></div> </div>
+        <div class="chart-box full-width-box"> <h2>Аналіз: Патерни Навантаження (Heatmap 7 днів/24 год)</h2> <div id="heatmap-chart"></div> </div>
+        <div class="chart-box full-width-box"> <h2>Оперативна Карта та Топологія Мережі</h2> <div id="geo-network-map"></div> </div>
+        <div class="chart-box full-width-box"> <h2>"Живий" моніторинг + ПРОГНОЗ (ПС Північна, 48+24 годин)</h2> <div class="chart-container"> <canvas id="forecastChart"></canvas> </div> </div>
+        <div class="chart-box full-width-box"> <h2>Фінансовий аналіз: Вартість енергії (останні 7 днів)</h2> <div class="chart-container"> <canvas id="financeChart"></canvas> </div> </div>
+        <div class="chart-box full-width-box"> <h2>Аналіз: Навантаження vs. Температура (7 днів)</h2> <div class="chart-container"> <canvas id="correlationChart"></canvas> </div> </div>
+        <div class="chart-box" id="consumer-pie-box"> <h2>Аналіз: Склад Споживачів</h2> <div class="chart-container" style="height: 300px;"> <canvas id="consumerPieChart"></canvas> </div> </div>
+        <div class="chart-box"> <h2>Аналіз: Енергетичний Мікс (%)</h2> <div class="chart-container" style="height: 300px;"> <canvas id="generationMixChart"></canvas> </div> </div>
+        <div class="chart-box"> <h2>Аналіз: Середній Цикл (МВт)</h2> <div class="chart-container" style="height: 300px;"> <canvas id="hourlyLoadChart"></canvas> </div> </div>
+        <div class="chart-box full-width-box"> <h2>📅 Календар Планових Ремонтів</h2> <div id="maintenance-table-container"> <p>Завантаження календаря...</p> </div> </div>
+        
+        <div class="chart-box full-width-box">
+            <h2>🚨 Активні Тривоги (Оперативний Журнал)</h2>
+            <div id="alerts-table-container">
+                <p>Завантаження тривог...</p>
+            </div>
+        </div>
+        
+    </div> <script>
+
+        const API_URL = 'http://127.0.0.1:8000'; // "Корінь" сервера
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // (Викликаємо всі 10 функцій)
+            fetchAndDrawGeoNetwork();
+            fetchForecastDashboard();
+            fetchFinanceChart();
+            fetchCorrelation();
+            fetchGenerationMix();
+            fetchHourlyLoad();
+            fetchAlerts(); 
+            fetchConsumerAnalysis();
+            fetchMaintenanceCalendar();
+            fetchSankeyChart_Plotly();
+            fetchHeatmapChart_Plotly();
+        });
+        
+        async function resolveAlert(alertId) {
+            try {
+                const response = await fetch(`${API_URL}/api/v11/alerts/${alertId}/resolve`, {
+                    method: 'POST',
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Помилка POST-запиту: ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                console.log(result.message); 
+                
+                fetchAlerts(); 
+                
+            } catch (error) {
+                console.error("Помилка при закритті тривоги:", error);
+                alert("Не вдалося закрити тривогу.");
+            }
+        }
+
+        /**
+         * v11: Таблиця Активних Аварій (з кнопкою)
+         */
+        async function fetchAlerts() { 
+            try { 
+                const response = await fetch(`${API_URL}/api/v11/alerts/active`); 
+                const alerts = await response.json(); 
+                
+                if (!Array.isArray(alerts)) {
+                    throw new Error("Відповідь API - не масив (можливо, помилка 404?)");
+                }
+                
+                const container = document.getElementById('alerts-table-container'); 
+                if (alerts.length === 0) { 
+                    container.innerHTML = '<p style="color: green; font-weight: bold;">✅ Активних тривог не зареєстровано. Система працює штатно.</p>'; 
+                    return; 
+                }
+                
+                let tableHTML = `<table><thead><tr><th>Час</th><th>Підстанція</th><th>Ліміт (МВт)</th><th>Опис Аварії</th><th>Дія</th></tr></thead><tbody>`; 
+                for (const alert of alerts) {
+                    tableHTML += `
+                        <tr>
+                            <td>${new Date(alert.timestamp).toLocaleString('uk-UA')}</td>
+                            <td>${alert.substation_name}</td>
+                            <td class="limit-cell">${alert.substation_limit}</td>
+                            <td class="alert-cell"><b>${alert.alert_description}</b></td>
+                            <td>
+                                <button class="resolve-button" onclick="resolveAlert(${alert.alert_id})">
+                                    Вирішено
+                                </button>
+                            </td>
+                        </tr>`;
+                }
+                container.innerHTML = tableHTML + `</tbody></table>`; 
+            } catch (error) { 
+                console.error("Помилка (Alerts):", error);
+                document.getElementById('alerts-table-container').innerHTML = "<p>Не вдалося завантажити список аварій. (Перевірте, чи запущено 'мозок' v11)</p>";
+            } 
+        }
+        
+        async function fetchSankeyChart_Plotly() {
+             try {
+                const response = await fetch(`${API_URL}/api/v10/analysis/sankey`); 
+                const data = await response.json();
+                if (!data.nodes || data.nodes.label.length === 0) return;
+                const plotData = [{ type: "sankey", orientation: "h", node: { pad: 15, thickness: 20, line: { color: "black", width: 0.5 }, label: data.nodes.label }, link: { source: data.links.source, target: data.links.target, value: data.links.value, label: data.links.label } }];
+                const layout = { title: "Потоки Генерації та Споживання", font: { size: 10 }, height: 500 };
+                Plotly.newPlot('sankey-chart', plotData, layout, {responsive: true});
+             } catch (error) { console.error("Помилка (Plotly Sankey Chart):", error); }
+        }
+        
+        async function fetchHeatmapChart_Plotly() {
+            try {
+                const response = await fetch(`${API_URL}/api/v8/analysis/heatmap`);
+                const data = await response.json();
+                const days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+                const hours = Array.from({length: 24}, (_, i) => i.toString().padStart(2, '0') + ':00');
+                let z_data = Array(7).fill(0).map(() => Array(24).fill(null));
+                for (const item of data) {
+                    z_data[item.day_of_week - 1][item.hour_of_day] = Math.round(item.avg_load);
+                }
+                const plotData = [{ z: z_data, x: hours, y: days, type: 'heatmap', hoverongaps: false, colorscale: [[0, '#5cb85c'], [0.5, '#f0ad4e'], [1, '#d9534f']] }];
+                const layout = { title: 'Тижневий Патерн Навантаження (МВт)', xaxis: { title: 'Година доби' }, yaxis: { title: 'День тижня' } };
+                Plotly.newPlot('heatmap-chart', plotData, layout, {responsive: true});
+            } catch (error) { console.error("Помилка (Plotly Heatmap Chart):", error); }
+        }
+
+        async function fetchAndDrawGeoNetwork() { 
+            try { 
+                const response = await fetch(`${API_URL}/api/v7/map/full_network`); 
+                const data = await response.json(); 
+                if (!data.nodes || data.nodes.length === 0) return; const map = L.map('geo-network-map').setView([48.3794, 31.1656], 6); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map); function getHeatColor(p) { return p > 80 ? '#d9534f' : p > 50 ? '#f0ad4e' : (p > 0 ? '#5cb85c' : '#888888'); } const nodeCoords = new Map(); for (const node of data.nodes) { nodeCoords.set(node.substation_id, [node.latitude, node.longitude]); L.circle([node.latitude, node.longitude], { color: getHeatColor(node.load_percent), fillColor: getHeatColor(node.load_percent), fillOpacity: 0.8, radius: 10000 }).addTo(map).bindPopup(`<b>Вузол: ${node.substation_name}</b><br>Статус: <b>${node.load_percent.toFixed(1)}%</b><br>Навантаження: ${node.current_load.toFixed(1)} МВт<br>Ліміт: ${node.capacity_mw} МВт`); } for (const edge of data.edges) { const fromCoords = nodeCoords.get(edge.from_substation_id); const toCoords = nodeCoords.get(edge.to_substation_id); if (fromCoords && toCoords) { L.polyline([fromCoords, toCoords], { color: getHeatColor(edge.load_percent), weight: Math.max(2, (edge.load_percent / 20)) }).addTo(map).bindPopup(`<b>Лінія: ${edge.line_name}</b><br>Статус: <b>${edge.load_percent.toFixed(1)}%</b><br>Навантаження: ${edge.current_load.toFixed(1)} МВт<br>Ліміт: ${edge.max_load_mw} МВт`); } } } catch (error) { console.error("Помилка (Geo-Network Map):", error); } 
+        }
+        
+        async function fetchForecastDashboard() { 
+            try { 
+                const response = await fetch(`${API_URL}/api/v4/forecast/live`); 
+                const data = await response.json(); 
+                const historyLabels = data.history.map(item => new Date(item.timestamp)); const historyLoad = data.history.map(item => item.actual_load_mw); const historyLimit = data.history.map(item => item.substation_limit); const forecastLabels = data.forecast.map(item => new Date(item.timestamp)); const forecastLoad = data.forecast.map(item => item.forecast_load); const allLabels = historyLabels.concat(forecastLabels); const nulls_for_history = Array(historyLabels.length).fill(null); const nulls_for_forecast = Array(forecastLabels.length).fill(null); new Chart(document.getElementById('forecastChart').getContext('2d'), { type: 'line', data: { labels: allLabels, datasets: [ { label: 'Реальне навантаження (МВт)', data: historyLoad.concat(nulls_for_forecast), borderColor: '#1A535C', borderWidth: 2, pointRadius: 0, tension: 0.1 }, { label: 'Ліміт потужності (МВт)', data: historyLimit.concat(nulls_for_forecast), borderColor: '#FF6384', borderDash: [5, 5], borderWidth: 2, pointRadius: 0 }, { label: 'ПРОГНОЗ (МВт)', data: nulls_for_history.concat(forecastLoad), borderColor: '#1A535C', borderDash: [10, 10], backgroundColor: 'rgba(78, 205, 196, 0.1)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.1 } ]}, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: 'hour', tooltipFormat: 'HH:mm dd-MM' } } } } }); } catch (error) { console.error("Помилка (Forecast Dashboard):", error); } 
+        }
+        
+        async function fetchFinanceChart() { 
+            try { 
+                const response = await fetch(`${API_URL}/api/v4/finance/hourly_cost`); 
+                const data = await response.json(); 
+                const labels = data.map(item => new Date(item.hour).toLocaleString('uk-UA', { day: 'numeric', month: 'short', hour: '2-digit' })); const costValues = data.map(item => (item.total_hourly_cost / 1000)); new Chart(document.getElementById('financeChart').getContext('2d'), { type: 'bar', data: { labels, datasets: [{ label: 'Вартість енергії (тис. грн)', data: costValues, backgroundColor: 'rgba(28, 148, 92, 0.7)' }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { title: { display: true, text: 'Вартість (тис. грн)' }} } } }); } catch (error) { console.error("Помилка (Finance Chart):", error); } 
+        }
+        
+        async function fetchHourlyLoad() { 
+            try { 
+                const response = await fetch(`${API_URL}/api/v1/load/hourly`); 
+                const data = await response.json(); 
+                const labels = data.map(item => String(item.hour_of_day).padStart(2, '0') + ':00'); const values = data.map(item => item.avg_load); new Chart(document.getElementById('hourlyLoadChart').getContext('2d'), { type: 'bar', data: { labels, datasets: [{ label: 'Середнє навантаження (МВт)', data: values, backgroundColor: '#4ECDC4' }] }, options: { responsive: true, maintainAspectRatio: false } }); } catch (error) { console.error("Помилка (Hourly Load):", error); } 
+        }
+        
+        async function fetchGenerationMix() { 
+            try { 
+                const response = await fetch(`${API_URL}/api/v2/generation/mix`); 
+                const data = await response.json(); 
+                const labels = data.map(item => item.generator_type); const values = data.map(item => item.total_generated); new Chart(document.getElementById('generationMixChart').getContext('2d'), { type: 'doughnut', data: { labels, datasets: [{ data: values, backgroundColor: ['rgba(255, 99, 132, 0.8)', 'rgba(255, 206, 86, 0.8)', 'rgba(54, 162, 235, 0.8)', 'rgba(75, 192, 192, 0.8)', 'rgba(153, 102, 255, 0.8)'] }] }, options: { responsive: true, maintainAspectRatio: false } }); } catch (error) { console.error("Помилка (Generation Mix):", error); } 
+        }
+        
+        async function fetchCorrelation() { 
+            try { 
+                const response = await fetch(`${API_URL}/api/v2/correlation/load-temp`); 
+                const data = await response.json(); 
+                const labels = data.map(item => new Date(item.hour).toLocaleString('uk-UA', { day: 'numeric', month: 'short', hour: '2-digit' })); const loadValues = data.map(item => item.avg_load); const tempValues = data.map(item => item.avg_temp); new Chart(document.getElementById('correlationChart').getContext('2d'), { type: 'line', data: { labels, datasets: [{ label: 'Навантаження (МВт)', data: loadValues, borderColor: '#1A535C', yAxisID: 'y_load' }, { label: 'Температура (°C)', data: tempValues, borderColor: '#FFB174', yAxisID: 'y_temp' }] }, options: { responsive: true, maintainAspectRatio: false, scales: { y_load: { type: 'linear', position: 'left', title: { display: true, text: 'Навантаження (МВт)' }}, y_temp: { type: 'linear', position: 'right', title: { display: true, text: 'Температура (°C)' }, grid: { drawOnChartArea: false }} } } }); } catch (error) { console.error("Помилка (Correlation):", error); } 
+        }
+        
+         async function fetchConsumerAnalysis() { 
+            try { 
+                const response = await fetch(`${API_URL}/api/v5/analysis/consumer_types`); 
+                const data = await response.json(); 
+                const labels = data.map(item => item.consumer_type); const values = data.map(item => item.consumer_count); new Chart(document.getElementById('consumerPieChart').getContext('2d'), { type: 'pie', data: { labels, datasets: [{ label: 'Кількість споживачів (шт.)', data: values, backgroundColor: ['rgba(231, 76, 60, 0.8)', 'rgba(52, 152, 219, 0.8)', 'rgba(241, 196, 15, 0.8)', 'rgba(155, 89, 182, 0.8)'] }] }, options: { responsive: true, maintainAspectRatio: false } }); } catch (error) { console.error("Помилка (Consumer Analysis):", error); } 
+        }
+        
+        async function fetchMaintenanceCalendar() { 
+             try { 
+                const response = await fetch(`${API_URL}/api/v5/maintenance/calendar`); 
+                const events = await response.json(); 
+                const container = document.getElementById('maintenance-table-container'); if (events.length === 0) { container.innerHTML = '<p>✅ Планових ремонтів не зареєстровано.</p>'; return; } let tableHTML = `<table><thead><tr><th>Час Початку</th><th>Час Кінця</th><th>Об'єкт</th><th>Тип</th><th>Причина</th></tr></thead><tbody>`; for (const event of events) { tableHTML += `<tr><td class="maintenance-cell"><b>${new Date(event.start_time).toLocaleString('uk-UA')}</b></td><td class="maintenance-cell"><b>${new Date(event.end_time).toLocaleString('uk-UA')}</b></td><td>${event.object_name}</td><td>${event.object_type}</td><td>${event.reason}</td></tr>`; } container.innerHTML = tableHTML + `</tbody></table>`; } catch (error) { console.error("Помилка (Maintenance Calendar):", error); } 
+        }
+    </script>
+</body>
+</html>
