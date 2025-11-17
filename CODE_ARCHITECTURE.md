@@ -1,7 +1,51 @@
 # 🏗️ Архітектура Коду та Технічна Реалізація
 
 Цей документ містить детальний технічний опис системи моніторингу енергосистеми (v11.0). Тут розкрито внутрішню логіку компонентів, обґрунтування вибору технологій та опис алгоритмів, використаних у проекті.
+```mermaid
+graph TD
+    %% Стилізація вузлів
+    classDef front fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:black;
+    classDef back fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:black;
+    classDef db fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:black;
+    classDef sim fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:black;
+    classDef user fill:#ffffff,stroke:#333,stroke-width:2px,color:black;
 
+    %% Актори та Компоненти
+    User((👤 Диспетчер)):::user
+    
+    subgraph Simulation_Layer [Генерація Даних]
+        Sim[03_generate_dynamic_data.py<br>Симулятор IoT]:::sim
+    end
+
+    subgraph Data_Layer [База Даних]
+        DB[(PostgreSQL<br>energy_monitoring_db)]:::db
+    end
+
+    subgraph Backend_Layer [Серверна Частина]
+        API[04_backend_api_v11.py<br>FastAPI Server]:::back
+    end
+
+    subgraph Frontend_Layer [Клієнтська Частина]
+        Dash[index_v11.html<br>Web Dashboard]:::front
+    end
+
+    %% Зв'язки (Потоки)
+    
+    %% 1. Генерація
+    Sim -- "1. Batch Insert (Синтетичні дані)" --> DB
+    
+    %% 2. Читання даних
+    User -- "2. Відкриває браузер" --> Dash
+    Dash -- "3. HTTP GET /api/..." --> API
+    API -- "4. SQL SELECT (Analytic Queries)" --> DB
+    DB -- "5. Result Set" --> API
+    API -- "6. JSON Response" --> Dash
+    
+    %% 3. Інтерактивність (Запис)
+    User -- "7. Клік 'Вирішено'" --> Dash
+    Dash -- "8. HTTP POST /api/.../resolve" --> API
+    API -- "9. SQL UPDATE (Change Status)" --> DB
+```
 ## 📂 1. Структура Проекту (File Tree)
 
 Система побудована за модульним принципом, де кожен файл відповідає за конкретний шар архітектури:
