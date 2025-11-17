@@ -21,35 +21,104 @@
 
 ```mermaid
 erDiagram
-    %% Довідники (Dimensions)
-    Regions ||--|{ Substations : "містить"
-    Substations ||--o{ PowerLines : "з'єднує (from)"
-    Substations ||--o{ PowerLines : "з'єднує (to)"
-    Substations ||--o{ Generators : "має"
-    Substations ||--o{ Consumers : "живить"
-
-    %% Факти та Події (Facts & Events)
-    Substations ||--o{ LoadMeasurements : "генерує 15хв"
-    Substations ||--o{ Alerts : "реєструє"
-    Generators ||--o{ GenerationMeasurements : "виробляє"
-    Regions ||--o{ WeatherReports : "має погоду"
-    Regions ||--o{ EnergyPricing : "має тарифи"
-
-    %% Опис ключових таблиць
+    %% --- ДОВІДНИКИ (Dimensions) ---
+    Regions {
+        int region_id PK
+        string region_name
+    }
     Substations {
-        int id PK
-        string name
+        int substation_id PK
+        string substation_name
         decimal capacity_mw
         float latitude
         float longitude
+        int region_id FK
     }
+    PowerLines {
+        int line_id PK
+        string line_name
+        decimal max_load_mw
+        int from_substation_id FK
+        int to_substation_id FK
+    }
+    Consumers {
+        int consumer_id PK
+        string consumer_name
+        string consumer_type
+        int substation_id FK
+    }
+    Generators {
+        int generator_id PK
+        string generator_type
+        decimal max_output_mw
+        int substation_id FK
+    }
+
+    %% --- ФАКТИ (Facts / Measurements) ---
     LoadMeasurements {
-        bigint id PK
-        timestamp time
-        decimal value_mw
+        bigint measurement_id PK
+        timestamp timestamp
+        decimal actual_load_mw
+        int substation_id FK
     }
+    GenerationMeasurements {
+        bigint gen_measurement_id PK
+        timestamp timestamp
+        decimal actual_generation_mw
+        int generator_id FK
+    }
+    LineMeasurements {
+        bigint line_measurement_id PK
+        timestamp timestamp
+        decimal actual_load_mw
+        int line_id FK
+    }
+
+    %% --- ПОДІЇ та ФАКТОРИ (Events & Analytics) ---
     Alerts {
-        int id PK
-        string status "NEW | RESOLVED"
-        string type
+        int alert_id PK
+        timestamp timestamp
+        string alert_type
+        string description
+        string status "NEW|RESOLVED"
+        int substation_id FK
     }
+    MaintenanceEvents {
+        int event_id PK
+        timestamp start_time
+        timestamp end_time
+        string object_type
+        string reason
+        int object_id FK
+    }
+    WeatherReports {
+        timestamp timestamp PK
+        int region_id PK
+        decimal temperature
+        string conditions
+    }
+    EnergyPricing {
+        timestamp timestamp PK
+        int region_id PK
+        decimal price_per_mwh
+    }
+
+    %% --- ЗВ'ЯЗКИ (Relationships) ---
+    Regions ||--|{ Substations : "містить"
+    Regions ||--|{ WeatherReports : "має погоду"
+    Regions ||--|{ EnergyPricing : "має тарифи"
+
+    Substations ||--o{ PowerLines : "початок (from)"
+    Substations ||--o{ PowerLines : "кінець (to)"
+    Substations ||--o{ Generators : "має джерела"
+    Substations ||--o{ Consumers : "живить"
+    
+    Substations ||--o{ LoadMeasurements : "моніторинг"
+    Substations ||--o{ Alerts : "інциденти"
+    
+    Generators ||--o{ GenerationMeasurements : "виробіток"
+    PowerLines ||--o{ LineMeasurements : "навантаження лінії"
+    
+    %% Логічні зв'язки для ремонтів (показані пунктиром, бо це поліморфний зв'язок)
+    Substations |o..o{ MaintenanceEvents : "ремонт"
+    PowerLines |o..o{ MaintenanceEvents : "ремонт"
