@@ -64,7 +64,7 @@ def fetch_static_data(conn):
     return substations, generators, lines, regions
 
 # ---
-# 3. "МОДЕЛІ ПОВЕДІНКИ" (Логіка "фантазування")
+# 3. МОДЕЛІ ПОВЕДІНКИ
 # ---
 
 def get_weather(timestamp, region_id):
@@ -252,4 +252,5 @@ if __name__ == "__main__":
             conn.rollback()
         finally:
             conn.close()
+
             print("З'єднання з базою даних закрито.")
