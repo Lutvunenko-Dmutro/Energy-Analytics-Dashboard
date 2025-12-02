@@ -7,250 +7,207 @@ from psycopg2.extras import execute_values
 import os
 from dotenv import load_dotenv
 
-# ---
-# 1. НАЛАШТУВАННЯ СИМУЛЯЦІЇ
-# ---
-
+# --- НАЛАШТУВАННЯ ---
 load_dotenv()
-
 DB_CONFIG = {
-    "dbname": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "host": os.getenv("DB_HOST", "localhost"), 
+    "dbname": os.getenv("DB_NAME", "postgres"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", "password"),
+    "host": os.getenv("DB_HOST", "localhost"),
     "port": os.getenv("DB_PORT", "5432")
 }
 
-# Параметри симуляції
-START_DATE = datetime.datetime(2025, 10, 1)
-END_DATE = datetime.datetime(2025, 11, 16)
-TIME_STEP = datetime.timedelta(minutes=15) 
+START_DATE = datetime.datetime(2025, 11, 1)
+END_DATE = datetime.datetime(2025, 11, 30)
+FREQ = "60min" 
 
-print(f"Симуляція даних з {START_DATE} по {END_DATE}...")
+# --- ПРОФІЛІ ---
+PROFILE_RESIDENTIAL = {
+    0: 0.4, 1: 0.35, 2: 0.32, 3: 0.32, 4: 0.35, 5: 0.45, 
+    6: 0.60, 7: 0.80, 8: 0.90, 9: 0.85, 10: 0.75, 
+    11: 0.70, 12: 0.70, 13: 0.70, 14: 0.72, 15: 0.75, 
+    16: 0.85, 17: 0.95, 18: 1.00, 19: 0.98, 20: 0.95, 
+    21: 0.90, 22: 0.75, 23: 0.55
+}
+PROFILE_INDUSTRIAL = {
+    0: 0.60, 1: 0.55, 2: 0.55, 3: 0.55, 4: 0.58, 5: 0.65, 
+    6: 0.75, 7: 0.85, 8: 0.95, 9: 0.98, 10: 0.98, 
+    11: 0.98, 12: 0.90, 13: 0.95, 14: 0.98, 15: 0.98, 
+    16: 0.95, 17: 0.85, 18: 0.75, 19: 0.70, 20: 0.65, 
+    21: 0.60, 22: 0.60, 23: 0.60
+}
+PROFILE_COMMERCIAL = {
+    0: 0.20, 1: 0.20, 2: 0.20, 3: 0.20, 4: 0.25, 5: 0.30, 
+    6: 0.40, 7: 0.60, 8: 0.80, 9: 0.95, 10: 1.00, 
+    11: 1.00, 12: 1.00, 13: 1.00, 14: 1.00, 15: 1.00, 
+    16: 0.95, 17: 0.80, 18: 0.60, 19: 0.50, 20: 0.40, 
+    21: 0.30, 22: 0.25, 23: 0.20
+}
 
 def get_db_connection():
-    """Створює та повертає з'єднання з БД."""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        print("✅ Підключення до PostgreSQL успішне.")
-        return conn
-    except psycopg2.OperationalError as e:
-        print(f"❌ НЕ ВДАЛОСЯ ПІДКЛЮЧИТИСЯ: {e}")
-        print("Перевірте ваші логін/пароль/назву БД у DB_CONFIG.")
+        return psycopg2.connect(**DB_CONFIG)
+    except Exception as e:
+        print(f"Connection error: {e}")
         return None
 
-# ---
-# 2. "ЧИТАЧ ДОВІДНИКІВ"
-# ---
-
-def fetch_static_data(conn):
-    """Завантажує довідники (Підстанції, Генератори, Лінії, Регіони) з БД."""
-    cursor = conn.cursor()
-    
-    with conn.cursor() as cursor:
-        cursor.execute("SELECT substation_id, capacity_mw, region_id FROM Substations")
-        substations = cursor.fetchall()
-        
-        cursor.execute("SELECT generator_id, generator_type, max_output_mw FROM Generators")
-        generators = cursor.fetchall()
-        
-        cursor.execute("SELECT line_id, max_load_mw, from_substation_id FROM PowerLines")
-        lines = cursor.fetchall()
-        
-        cursor.execute("SELECT region_id FROM Regions")
-        regions = cursor.fetchall()
-
-    print(f"Завантажено {len(substations)} підстанцій, {len(generators)} генераторів, {len(lines)} ліній.")
-    return substations, generators, lines, regions
-
-# ---
-# 3. МОДЕЛІ ПОВЕДІНКИ
-# ---
-
-def get_weather(timestamp, region_id):
-    """Генерує реалістичну погоду."""
-    day_of_year = timestamp.timetuple().tm_yday
-    hour = timestamp.hour
-    
-    temp_base = 10 + 5 * np.sin(2 * np.pi * (day_of_year - 80) / 365.25)
-    temp_daily = -3 * np.sin(2 * np.pi * hour / 24)
-    temperature = round(temp_base + temp_daily + random.uniform(-1, 1), 2)
-    
-    conditions = "Сонячно"
-    if hour < 6 or hour > 20:
-        conditions = "Ніч"
-    elif temperature < 8 or random.random() < 0.3:
-        conditions = "Хмарно"
-    
-    return temperature, conditions
-
-def get_price(timestamp, region_id):
-    """Генерує ціну залежно від години (пік, ніч)."""
-    hour = timestamp.hour
-    if 0 <= hour < 7: # Ніч
-        return 2000.00 + random.uniform(0, 100)
-    if 18 <= hour < 23: # Вечірній пік
-        return 5000.00 + random.uniform(0, 500)
-    return 3500.00 + random.uniform(0, 300) # День
-
-def get_generation(generator, weather_conditions, timestamp):
-    """Генерує виробіток для генератора."""
-    g_id, g_type, max_output_decimal = generator
-    max_output = float(max_output_decimal) 
-    
-    hour = timestamp.hour
-    output = 0.0
-    
-    if g_type == 'solar':
-        if weather_conditions == "Сонячно" and 7 < hour < 19:
-            output = max_output * (1 - abs(hour - 13) / 6) * random.uniform(0.8, 1.0)
-        else:
-            output = max_output * 0.1
-    
-    elif g_type == 'thermal':
-        output = max_output * random.uniform(0.7, 0.9)
-    
-    elif g_type == 'wind':
-        output = max_output * random.uniform(0.2, 1.0)
-        
-    return round(max(0, output), 2)
-
-def get_load(substation, timestamp, temperature):
-    """Генерує навантаження для підстанції (найскладніша логіка)."""
-    sub_id, capacity_decimal, region_id = substation
-    capacity = float(capacity_decimal)
-
-    hour = timestamp.hour
-    
-    base_load = capacity * 0.3
-    daily_pattern_raw = np.sin(2 * np.pi * (hour - 10) / 24) + 1
-    daily_pattern = (daily_pattern_raw / 2) * capacity * 0.4
-    
-    weather_effect = 0
-    if temperature < 5: 
-        weather_effect = (5 - temperature) * (capacity * 0.02)
-    if temperature > 22:
-        weather_effect = (temperature - 22) * (capacity * 0.015)
-
-    noise = capacity * 0.03 * random.uniform(-1, 1)
-    
-    total_load = base_load + daily_pattern + weather_effect + noise
-    
-    is_alert = False
-    if random.random() < 0.001: 
-        total_load = capacity * random.uniform(1.05, 1.2)
-        is_alert = True
-        
-    return total_load, is_alert
-
-# ---
-# 4. "СИМУЛЯТОР ЖИТТЯ" (Головний цикл)
-# ---
-
-def run_simulation(conn, substations, generators, lines, regions):
-    
-    timestamps = pd.date_range(START_DATE, END_DATE, freq=TIME_STEP)
-    
-    print("Початок генерації... Це може зайняти хвилину.")
-    generated_weather = []
-    generated_prices = []
-    generated_loads = []
-    generated_gens = []
-    generated_lines = []
-    generated_alerts = []
-
-    for ts in timestamps:
-        
-        weather_cache = {}
-        for r in regions:
-            region_id = r[0]
-            temp, cond = get_weather(ts, region_id)
-            price = get_price(ts, region_id)
-            
-            weather_cache[region_id] = (temp, cond)
-            generated_weather.append((ts, region_id, float(temp), cond))
-            generated_prices.append((ts, region_id, float(price)))
-            
-        for sub in substations:
-            sub_id, capacity_decimal, region_id = sub
-            
-            temp, cond = weather_cache[region_id]
-            
-            load, is_alert = get_load(sub, ts, temp)
-            generated_loads.append((ts, float(round(load, 2)), sub_id))
-            
-            if is_alert:
-                capacity = float(capacity_decimal) 
-                desc = f"Авто-детект: Перевантаження на {sub_id}! Навантаження: {load:.2f} МВт, Ліміт: {capacity} МВт"
-                generated_alerts.append((ts, 'Перевантаження', desc, sub_id))
-
-        for gen in generators:
-            temp, cond = weather_cache[regions[0][0]] 
-            gen_output = get_generation(gen, cond, ts)
-            generated_gens.append((ts, float(gen_output), gen[0]))
-            
-        for line in lines:
-            line_id, max_load_decimal, from_sub_id = line
-            max_load = float(max_load_decimal) 
-            
-            line_load = max_load * 0.3 + random.uniform(0, max_load * 0.2)
-            generated_lines.append((ts, float(round(line_load, 2)), line_id))
-
-    print(f"✅ Генерацію завершено. {len(timestamps)} кроків часу оброблено.")
-    
-    # ---
-    # 5. "ЕФЕКТИВНИЙ ЗАПИС" (Batch Insert)
-    # ---
-    
-    print("Початок запису в базу даних (використовуємо batch insert)...")
-    with conn.cursor() as cursor:
-        execute_values(cursor, 
-                       "INSERT INTO WeatherReports (timestamp, region_id, temperature, conditions) VALUES %s", 
-                       generated_weather)
-        print(f"Записано {len(generated_weather)} звітів про погоду.")
-        
-        execute_values(cursor, 
-                       "INSERT INTO EnergyPricing (timestamp, region_id, price_per_mwh) VALUES %s", 
-                       generated_prices)
-        print(f"Записано {len(generated_prices)} звітів про ціни.")
-
-        execute_values(cursor, 
-                       "INSERT INTO LoadMeasurements (timestamp, actual_load_mw, substation_id) VALUES %s", 
-                       generated_loads)
-        print(f"Записано {len(generated_loads)} вимірювань навантаження.")
-
-        execute_values(cursor, 
-                       "INSERT INTO GenerationMeasurements (timestamp, actual_generation_mw, generator_id) VALUES %s", 
-                       generated_gens)
-        print(f"Записано {len(generated_gens)} вимірювань генерації.")
-        
-        execute_values(cursor, 
-                       "INSERT INTO LineMeasurements (timestamp, actual_load_mw, line_id) VALUES %s", 
-                       generated_lines)
-        print(f"Записано {len(generated_lines)} вимірювань на лініях.")
-
-        if generated_alerts:
-             execute_values(cursor, 
-                            "INSERT INTO Alerts (timestamp, alert_type, description, substation_id) VALUES %s", 
-                            generated_alerts)
-             print(f"🚨🚨🚨 Записано {len(generated_alerts)} ТРИВОГ! 🚨🚨🚨")
-
-    conn.commit()
-    print("✅ УСІ ДАНІ УСПІШНО ЗАПИСАНО В БАЗУ!")
-
-# ---
-# ЗАПУСК СКРИПТА
-# ---
-if __name__ == "__main__":
+def generate_professional_data():
     conn = get_db_connection()
-    if conn:
-        try:
-            substations, generators, lines, regions = fetch_static_data(conn)
-            run_simulation(conn, substations, generators, lines, regions)
-        except Exception as e:
-            print(f"Сталася помилка: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
+    if not conn: return
 
-            print("З'єднання з базою даних закрито.")
+    cursor = conn.cursor()
+    print("🧹 Очищення старих даних...")
+    cursor.execute("TRUNCATE TABLE LoadMeasurements, GenerationMeasurements, Alerts, WeatherReports, EnergyPricing, LineMeasurements CASCADE;")
+    
+    # Завантаження ВСІХ довідників
+    cursor.execute("SELECT substation_id, capacity_mw, region_id FROM Substations")
+    substations = cursor.fetchall()
+    
+    cursor.execute("SELECT generator_id, generator_type, max_output_mw FROM Generators")
+    generators = cursor.fetchall()
+    
+    # ДОДАНО: Завантаження ліній
+    cursor.execute("SELECT line_id, max_load_mw FROM PowerLines")
+    lines = cursor.fetchall()
+
+    cursor.execute("SELECT region_id FROM Regions")
+    regions = [r[0] for r in cursor.fetchall()]
+
+    # Типізація підстанцій
+    sub_profiles = {}
+    for sub in substations:
+        sid = sub[0]
+        r = random.random()
+        if r < 0.5: sub_profiles[sid] = ('RESIDENTIAL', PROFILE_RESIDENTIAL)
+        elif r < 0.8: sub_profiles[sid] = ('INDUSTRIAL', PROFILE_INDUSTRIAL)
+        else: sub_profiles[sid] = ('COMMERCIAL', PROFILE_COMMERCIAL)
+            
+    print(f"🚀 Генерація даних з лініями ({START_DATE.date()} - {END_DATE.date()})...")
+    
+    timestamps = pd.date_range(START_DATE, END_DATE, freq=FREQ)
+    
+    batch_l, batch_g, batch_w, batch_p, batch_a, batch_lines = [], [], [], [], [], []
+    current_temps = {rid: 10.0 for rid in regions} 
+    
+    for ts in timestamps:
+        hour = ts.hour
+        is_weekend = ts.weekday() >= 5
+        
+        # 1. ПОГОДА & ЦІНИ
+        weather_map = {}
+        for rid in regions:
+            day_trend = -0.1
+            daily_cycle = 4 * np.sin((hour - 9) * np.pi / 12)
+            noise = np.random.normal(0, 0.5)
+            current_temps[rid] += day_trend / 24 + np.random.normal(0, 0.1)
+            final_temp = float(current_temps[rid] + daily_cycle + noise)
+            cond = "Сонячно" if (6 < hour < 18 and random.random() > 0.3) else "Хмарно"
+            
+            weather_map[rid] = (final_temp, cond)
+            batch_w.append((ts, rid, round(final_temp, 2), cond))
+            
+            price_base = 3000 if not is_weekend else 2500
+            price_profile = PROFILE_RESIDENTIAL[hour]
+            price = float(price_base * price_profile * random.uniform(0.95, 1.05))
+            batch_p.append((ts, rid, round(price, 2)))
+
+        # === 2. НАВАНТАЖЕННЯ ===
+        for sub in substations:
+            sid, cap, rid = sub
+            cap = float(cap)
+            
+            temp_data = weather_map.get(rid)
+            current_temp = temp_data[0]
+            
+            type_data = sub_profiles.get(sid)
+            p_type = type_data[0]
+            daily_profile = type_data[1]
+            
+            base_factor = daily_profile[hour]
+            
+            if is_weekend:
+                if p_type == 'INDUSTRIAL':
+                    base_factor = base_factor * 0.65
+                elif p_type == 'COMMERCIAL':
+                    base_factor = base_factor * 0.85
+                else:
+                    base_factor = base_factor * 1.05
+            
+            if current_temp < 15:
+                diff = 15 - current_temp
+                base_factor = base_factor + (diff * 0.015)
+            
+            noise = random.uniform(-0.03, 0.03)
+            final_factor = base_factor + noise
+            
+            if final_factor < 0.1: final_factor = 0.1
+            if final_factor > 1.1: final_factor = 1.1
+            
+            actual_load = cap * final_factor
+            batch_l.append((ts, round(actual_load, 2), sid))
+            
+            if actual_load > (cap * 0.95):
+                if random.randint(1, 100) <= 15:
+                    msg = f"Критичне навантаження: {round(final_factor*100, 1)}%"
+                    batch_a.append((ts, 'Перевантаження', msg, sid, 'NEW'))
+
+        # === 3. ГЕНЕРАЦІЯ ===
+        for gen in generators:
+            gid, gtype, max_g = gen
+            max_g = float(max_g)
+            current_gen = 0.0
+            
+            if gtype == 'solar':
+                if hour > 6 and hour < 19:
+                    peak_hour = 12
+                    efficiency = 1 - (abs(hour - peak_hour) / 7)
+                    if efficiency < 0: efficiency = 0
+                    
+                    weather_coef = random.uniform(0.4, 1.0)
+                    current_gen = max_g * efficiency * weather_coef
+                else:
+                    current_gen = 0.0
+                    
+            elif gtype == 'wind':
+                wind_coef = random.uniform(0.1, 0.9)
+                current_gen = max_g * wind_coef
+                
+            elif gtype == 'nuclear':
+                current_gen = max_g * 0.95
+                
+            elif gtype == 'thermal':
+                coef = PROFILE_RESIDENTIAL[hour]
+                current_gen = max_g * coef * random.uniform(0.9, 1.0)
+                
+            else:
+                current_gen = max_g * 0.5
+            
+            batch_g.append((ts, round(current_gen, 2), gid))
+
+        # === 4. ЛІНІЇ ===
+        for line in lines:
+            lid, max_load = line
+            max_load = float(max_load)
+            
+            base_load = PROFILE_RESIDENTIAL[hour]
+            variation = random.uniform(0.9, 1.1)
+            
+            line_val = max_load * base_load * 0.7 * variation
+            batch_lines.append((ts, round(line_val, 2), lid))
+
+    # ЗАПИС
+    print("💾 Збереження в базу даних...")
+    execute_values(cursor, "INSERT INTO WeatherReports (timestamp, region_id, temperature, conditions) VALUES %s", batch_w)
+    execute_values(cursor, "INSERT INTO EnergyPricing (timestamp, region_id, price_per_mwh) VALUES %s", batch_p)
+    execute_values(cursor, "INSERT INTO LoadMeasurements (timestamp, actual_load_mw, substation_id) VALUES %s", batch_l)
+    execute_values(cursor, "INSERT INTO GenerationMeasurements (timestamp, actual_generation_mw, generator_id) VALUES %s", batch_g)
+    execute_values(cursor, "INSERT INTO LineMeasurements (timestamp, actual_load_mw, line_id) VALUES %s", batch_lines) # Запис ліній
+    if batch_a:
+        execute_values(cursor, "INSERT INTO Alerts (timestamp, alert_type, description, substation_id, status) VALUES %s", batch_a)
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ Успішно! Згенеровано {len(batch_l)} записів.")
+
+if __name__ == "__main__":
+    generate_professional_data()
